@@ -1,0 +1,31 @@
+# --- Secrets & credentials (never commit these) ---
+.env
+Client_Secret.json
+token files/
+*.pickle
+
+# --- Generated/local data ---
+chroma_store/
+knowledge_base/*
+!knowledge_base/.gitkeep
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# --- Editor/IDE ---
+.vscode/
+.idea/
+
+# --- OS cruft ---
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log

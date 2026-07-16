@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BrightReach Virtual Assistant</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="chat-shell">
+    <header class="chat-header">
+      <div class="chat-header__badge" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 3C7.03 3 3 6.58 3 11c0 2.42 1.23 4.6 3.17 6.07-.1.9-.42 2.13-1.17 3.43a.5.5 0 0 0 .58.73c1.98-.6 3.4-1.42 4.24-1.98A11.4 11.4 0 0 0 12 19c4.97 0 9-3.58 9-8s-4.03-8-9-8z" fill="currentColor"/>
+        </svg>
+      </div>
+      <div class="chat-header__text">
+        <h1>BrightReach Virtual Assistant</h1>
+        <p><span class="status-dot" aria-hidden="true"></span>Usually replies in a few seconds</p>
+      </div>
+    </header>
+
+    <main class="chat-log" id="chat-log" aria-live="polite">
+      <!-- Messages are inserted here by app.js -->
+    </main>
+
+    <div class="typing-row" id="typing-row" hidden>
+      <div class="bubble bubble--bot bubble--typing">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      </div>
+    </div>
+
+    <form class="chat-input" id="chat-form" autocomplete="off">
+      <input
+        type="text"
+        id="chat-input"
+        name="message"
+        placeholder="Ask about services, pricing, or book a call…"
+        aria-label="Type your message"
+        required
+      />
+      <button type="submit" aria-label="Send message">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 12L20 4L13 20L11 13L4 12Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </form>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
