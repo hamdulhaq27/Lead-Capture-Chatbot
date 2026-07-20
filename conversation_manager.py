@@ -60,7 +60,7 @@ from chatbot_lead_manager import capture_lead, update_lead_booking  # Module B �
 
 load_dotenv()
 
-GROQ_MODEL_NAME = os.getenv("GROQ_MODEL_NAME", "llama-3.3-70b-versatile")
+GROQ_MODEL_NAME = os.getenv("GROQ_MODEL_NAME")
 _groq_client = None
 
 
@@ -248,24 +248,138 @@ def reset_session(session_id: str) -> None:
 ####################################
 # Intent classification (LLM-driven)
 ####################################
-INTENT_SYSTEM_PROMPT = """You classify a user's message into ONE intent for a
-digital marketing agency's chatbot. Respond with ONLY a JSON object, no
-other text, in this exact shape:
+INTENT_SYSTEM_PROMPT = """You are an intent classifier for a digital marketing agency chatbot.
+
+Your task is to classify the user's latest message into EXACTLY ONE intent.
+
+Respond with ONLY a valid JSON object and nothing else, using this exact format:
 
 {"intent": "<one of: general_qa, start_booking, start_cancellation, start_reschedule, confirm, deny, abandon, provide_info>"}
 
-Definitions:
-- start_booking: the user has clearly decided they want to schedule a NEW meeting, call, consultation, demo, or discovery call — e.g. "let's book a call", "can we get something on the calendar", "I'd like to schedule a consultation", or an affirmative reply to the assistant having just offered to set one up. Do NOT classify as start_booking just because the user describes their business, project, or goals, or expresses interest in a service — that is general_qa. The assistant should discuss the user's needs first; only move to booking once the user actually asks to schedule something or clearly agrees to a call the assistant offered.
-- start_cancellation: user wants to cancel an existing booking outright (not replace it with a new time).
-- start_reschedule: user wants to CHANGE/UPDATE any detail of an existing booking — the date, time, OR their name/email/phone number on file for it — this is DIFFERENT from cancellation, since the customer still wants the call, just with something about it corrected or moved. Phrases like "change my booking", "move my appointment", "reschedule", "can we do a different time instead", "change my email", "update my phone number", "I need to correct the name on my booking" all mean this, NOT start_cancellation. This applies even when the user only says "change email"/"update phone"/"change name" with no other context — in this chatbot, updating contact details is only ever done through the booking-update flow, so treat bare requests like that as start_reschedule too.
-- confirm: user is affirmatively confirming something just asked of them (yes, correct, sounds good, etc.)
-- deny: user is rejecting/correcting something just asked of them (no, that's wrong, actually change it to...)
-- abandon: user wants to stop the current booking/cancellation/reschedule process entirely (nevermind, cancel that, stop, forget it).
-- provide_info: user is supplying requested information (a name, email, phone, date, time) as part of an ongoing flow.
-- general_qa: anything else — general questions about services, pricing, policies, small talk, or the user describing their business/project/goals and exploring whether or how the agency could help.
+INTENT DEFINITIONS
 
-If the CURRENT_STATE below is not GENERAL, lean toward confirm/deny/abandon/provide_info
-over general_qa unless the message is CLEARLY an unrelated new question.
+- start_booking:
+  The user has clearly decided to schedule a NEW meeting, consultation, discovery call, demo, or similar appointment.
+  Examples:
+  - "Let's book a call."
+  - "I'd like to schedule a consultation."
+  - "Can we get something on the calendar?"
+  - "I would like to make a booking."
+  - "I want to book an appointment."
+  - "Can I get a consultation booked?"
+  - "Yes, let's do that." (when replying to the assistant offering a call)
+
+  This applies regardless of whether the user says "book", "schedule", "make", "get", "need", or "want" — what matters is that they are asking to have a call/meeting/consultation/demo/appointment/booking set up, not the exact verb used.
+
+  Do NOT classify as start_booking merely because the user:
+  - describes their business,
+  - explains a project,
+  - expresses interest in services,
+  - asks about pricing,
+  - asks about timelines,
+  - explores whether the agency can help.
+
+  Those cases are always general_qa until the user explicitly agrees to or requests scheduling.
+
+- start_cancellation:
+  The user wants to completely cancel an existing booking without requesting a replacement appointment.
+
+  Examples:
+  - "Cancel my meeting."
+  - "I don't need the appointment anymore."
+
+- start_reschedule:
+  The user wants to modify an existing booking rather than cancel it.
+
+  This includes changing:
+  - date
+  - time
+  - name
+  - email address
+  - phone number
+  - any booking details
+
+  Examples:
+  - "Reschedule my appointment."
+  - "Can we move it to Friday?"
+  - "I'd like a different time."
+  - "Change my email."
+  - "Update my phone number."
+  - "Correct the name on my booking."
+
+  Even if the user only says:
+  - "Change my email"
+  - "Update my phone number"
+  - "Correct my name"
+
+  classify as start_reschedule. Within this chatbot, contact information changes are always handled through the booking update flow.
+
+- confirm:
+  The user is affirmatively responding to something the assistant just asked.
+
+  Examples:
+  - "Yes."
+  - "Correct."
+  - "That's right."
+  - "Sounds good."
+  - "Sure."
+
+- deny:
+  The user is rejecting or correcting something the assistant just asked.
+
+  Examples:
+  - "No."
+  - "That's incorrect."
+  - "Actually, Tuesday instead."
+  - "Not that one."
+
+- abandon:
+  The user wants to stop the current booking, cancellation, or rescheduling flow entirely.
+
+  Examples:
+  - "Never mind."
+  - "Forget it."
+  - "Stop."
+  - "Cancel this process."
+
+- provide_info:
+  The user is supplying information requested during an active workflow.
+
+  Examples include:
+  - Name
+  - Email address
+  - Phone number
+  - Date
+  - Time
+  - Any requested booking detail
+
+- general_qa:
+  Everything else.
+
+  This includes:
+  - Questions about services
+  - Pricing
+  - Policies
+  - Timelines
+  - General conversation
+  - Small talk
+  - The user describing their business or goals
+  - Asking whether the agency can help
+  - Exploring available services
+
+STATE HANDLING
+
+If the CURRENT_STATE below is NOT GENERAL, prefer classifying the message as one of:
+- confirm
+- deny
+- abandon
+- provide_info
+
+rather than general_qa, unless the user's message clearly starts an unrelated new conversation.
+
+Always choose the single best matching intent.
+
+Output ONLY the JSON object. Never include explanations, markdown, or additional text.
 """
 
 
@@ -275,62 +389,176 @@ over general_qa unless the message is CLEARLY an unrelated new question.
 # _parse_date_phrase for why arithmetic is
 # never delegated to the model)
 ##########################################
-DATE_RESOLUTION_SYSTEM_PROMPT = """You interpret a natural-language date phrase
-for a booking system. You do NOT calculate the final date yourself — you only
-identify the STRUCTURE of what the user means, in this exact JSON shape:
+DATE_RESOLUTION_SYSTEM_PROMPT = """You interpret natural-language date expressions for a booking system.
 
-{"kind": "explicit" | "weekday" | "unresolvable",
- "explicit_year": <int or null>, "explicit_month": <int 1-12 or null>, "explicit_day": <int 1-31 or null>,
- "weekday": "<monday|tuesday|wednesday|thursday|friday|saturday|sunday> or null",
- "week_offset": <int or null>,
- "day_offset": <int or null>}
+Your job is NOT to calculate the final calendar date. Instead, identify the structure of the user's date expression and return ONLY a valid JSON object in this exact format:
 
-Rules for which "kind" to use:
-- "explicit": the phrase reduces to either (a) a plain day-count offset from
-  today, or (b) a specific calendar date. Two cases:
-    (a) Day-count offset — phrases like "today", "tomorrow", "yesterday",
-        "day after tomorrow", "in 3 days", "in 2 weeks", "10 days from now",
-        "a week from now". Set day_offset to the signed number of days from
-        today (today=0, tomorrow=1, yesterday=-1, "in 2 weeks"=14, "a week
-        from now"=7, etc.). Leave explicit_year/month/day and weekday null.
-    (b) Specific calendar date — phrases like "July 20", "20/7", "20th of
-        July 2026", "7-20-2026". Extract explicit_day and explicit_month as
-        written (explicit_year only if a year is actually stated, otherwise
-        null). Do not compute anything — just read off the numbers/month name
-        as given. Leave day_offset and weekday null.
-  Do NOT use case (a) for "next month" — a month is not a fixed number of
-  days, so guessing a day-count for it would be wrong. Use "unresolvable" for
-  "next month" instead (see below).
-- "weekday": the phrase names a day of the week (e.g. "Thursday", "next
-  Thursday", "next week Thursday", "this coming Monday", "Thursday of next
-  week", "the Thursday after next"). Set "weekday" to that day's name
-  (lowercase). Set "week_offset" to:
-    - 0 for the NORMAL case — this covers a bare weekday name ("Thursday"),
-      "next [weekday]" ("next Thursday"), "next week [weekday]" ("next week
-      Thursday"), and "this coming [weekday]". ALL of these mean the SAME
-      thing: the closest upcoming occurrence of that day, whether that's
-      tomorrow or up to 6 days away. Do NOT treat "next" or "next week" as
-      a signal to skip an extra week — in everyday scheduling usage, "next
-      Tuesday" and "next week Tuesday" both just mean "the Tuesday that's
-      coming up," not "skip this Tuesday, go to the one after."
-    - 1 ONLY if the phrase is explicit about skipping past the nearest
-      occurrence — e.g. "the [weekday] after next", "the week after next on
-      [weekday]", "not this Tuesday, the one after", "two Tuesdays from
-      now" (which would actually be week_offset 1 relative to the nearest
-      Tuesday). If the phrase doesn't clearly signal "skip one," use 0.
-    - 2 for phrases that explicitly compound the skip, e.g. "two weeks from
-      now on [weekday]" combined with a further "after that" qualifier —
-      this should be rare; most real phrases resolve to 0 or 1.
-  Leave explicit_year/month/day and day_offset null for this kind.
-- "unresolvable": the phrase is too vague to interpret at all (e.g. "soon",
-  "later", "whenever"), OR it is "next month" specifically (a month has no
-  fixed day-count, so this must be flagged rather than guessed — the caller
-  will ask the user for a specific date instead).
+{
+  "kind": "explicit" | "weekday" | "unresolvable",
+  "explicit_year": <int or null>,
+  "explicit_month": <int 1-12 or null>,
+  "explicit_day": <int 1-31 or null>,
+  "weekday": "<monday|tuesday|wednesday|thursday|friday|saturday|sunday> or null",
+  "week_offset": <int or null>,
+  "day_offset": <int or null>
+}
 
-Respond with ONLY the JSON object, no other text. Never include commentary,
-never explain your reasoning, never wrap the JSON in markdown fences.
+RULES
+
+1. kind = "explicit"
+
+Use this when the user's phrase represents either:
+
+(a) A day-count offset from today.
+
+Examples:
+- today
+- tomorrow
+- yesterday
+- day after tomorrow
+- in 3 days
+- in 2 weeks
+- 10 days from now
+- a week from now
+
+For these:
+
+- Set day_offset to the signed number of days relative to today.
+  - today = 0
+  - tomorrow = 1
+  - yesterday = -1
+  - in 2 weeks = 14
+  - a week from now = 7
+
+- Leave these as null:
+  - explicit_year
+  - explicit_month
+  - explicit_day
+  - weekday
+  - week_offset
+
+Do NOT calculate an actual calendar date.
+
+OR
+
+(b) A specific calendar date.
+
+Examples:
+- July 20
+- 20 July
+- 20th of July
+- July 20th, 2026
+- 20/7
+- 7-20-2026
+
+For these:
+
+- Extract the values exactly as written.
+- Populate:
+  - explicit_day
+  - explicit_month
+  - explicit_year (only if explicitly provided)
+
+If the year is omitted, return null.
+
+Leave these as null:
+- weekday
+- week_offset
+- day_offset
+
+Never infer or calculate missing values.
+
+Do NOT classify "next month" as explicit. A month does not represent a fixed number of days.
+
+--------------------------------------------------
+
+2. kind = "weekday"
+
+Use this when the phrase refers to a weekday.
+
+Examples:
+- Monday
+- Thursday
+- next Thursday
+- next week Thursday
+- this coming Monday
+- Thursday of next week
+
+Set:
+
+weekday = lowercase weekday name
+
+week_offset according to these rules:
+
+week_offset = 0
+
+Use for the normal interpretation, including:
+
+- Monday
+- next Monday
+- next week Monday
+- this coming Monday
+
+All of these refer to the nearest upcoming occurrence of that weekday.
+
+Do NOT interpret "next Monday" as automatically skipping an extra week.
+
+week_offset = 1
+
+Use ONLY when the user explicitly indicates skipping the nearest occurrence.
+
+Examples:
+
+- the Monday after next
+- the week after next on Monday
+- not this Monday, the one after
+- two Mondays from now
+
+week_offset = 2
+
+Use only when the wording explicitly skips two full upcoming weekday occurrences.
+
+This is rare.
+
+For weekday expressions leave these as null:
+
+- explicit_year
+- explicit_month
+- explicit_day
+- day_offset
+
+--------------------------------------------------
+
+3. kind = "unresolvable"
+
+Use this when the user's phrase cannot be converted into either an explicit date or a weekday.
+
+Examples:
+
+- soon
+- later
+- whenever
+- someday
+- sometime
+
+Also classify these as unresolvable:
+
+- next month
+
+Reason:
+A month alone does not specify a calendar day, so it must not be guessed.
+
+--------------------------------------------------
+
+GENERAL RULES
+
+- Never calculate the final calendar date.
+- Never infer missing values.
+- Never explain your reasoning.
+- Never include additional fields.
+- Never output markdown.
+- Never output anything except the JSON object.
 """
-
 
 
 # Safety net: LLM classification isn't 100% deterministic, and an API
@@ -343,8 +571,15 @@ never explain your reasoning, never wrap the JSON in markdown fences.
 # LLM call glitches or the request phrasing was ambiguous enough that the
 # classifier hedged toward general_qa.
 _EXPLICIT_BOOKING_PATTERN = re.compile(
+    # Verb-first: "book a call", "schedule a consultation", "set up a demo"
     r"\b(book|schedule|set\s?up|arrange)\b[^.?!]{0,25}\b"
-    r"(a\s+)?(call|meeting|consultation|demo|discovery\s+call|appointment|session)\b",
+    r"(a\s+)?(call|meeting|consultation|demo|discovery\s+call|appointment|session|booking)\b"
+    # Noun-first: "make a booking", "get an appointment", "need a consultation",
+    # "want to book a call" — catches any verb (make/get/need/want/have/book/
+    # schedule/etc.) preceding the actual noun the user wants scheduled,
+    # since real phrasing varies more than a fixed verb list can anticipate.
+    r"|\b(make|get|have|need|want|book|schedule|set\s?up|arrange)\b[^.?!]{0,25}\b"
+    r"(a\s+)?(booking|appointment|call|meeting|consultation|demo|discovery\s+call|session)\b",
     re.IGNORECASE,
 )
 
@@ -487,25 +722,88 @@ def classify_intent(message: str, current_state: str,
 ##############################################################
 # Field extraction (LLM-driven, since users won't fill a form)
 ##############################################################
-EXTRACTION_SYSTEM_PROMPT = """Extract booking-relevant fields from the user's
-message. Respond with ONLY a JSON object, no other text:
+EXTRACTION_SYSTEM_PROMPT = """Extract booking-related information from the user's latest message.
 
-{{"name": "...", "email": "...", "phone": "...", "date_phrase": "... or null",
- "time_phrase": "... or null", "company": "...", "note": "..."}}
+Respond with ONLY a valid JSON object in this exact format:
 
-Use null for any field not present in the message.
+{{
+  "name": "...",
+  "email": "...",
+  "phone": "...",
+  "date_phrase": "... or null",
+  "time_phrase": "... or null",
+  "company": "...",
+  "note": "..."
+}}
 
-For date_phrase and time_phrase: extract the user's EXACT words for the date
-and time, WITHOUT resolving, calculating, or converting them yourself — e.g.
-if they say "next Tuesday at 3pm", return date_phrase: "next Tuesday" and
-time_phrase: "3pm", unchanged. This also applies to numeric dates like
-"7/13/2026", "13-07-26", or "13/7/26" — copy them exactly as written, do NOT
-reformat, reorder, or reinterpret the numbers. A separate, deterministic
-step handles all date/time conversion. Your only job here is pulling out
-the literal phrase the user used.
+GENERAL RULES
+
+- Extract only information that is explicitly present in the user's message.
+- Never infer, guess, or complete missing information.
+- Use null for any field that is not provided.
+- Do not modify, normalize, or correct extracted values.
+- Do not include fields that are not listed above.
+- Output only the JSON object.
+
+FIELD RULES
+
+name
+- Extract the person's name exactly as provided.
+
+email
+- Extract the email address exactly as written.
+
+phone
+- Extract the phone number exactly as written.
+
+company
+- Extract the company or business name if explicitly mentioned.
+
+note
+- Extract any additional booking-related information that does not belong in another field.
+- If no such information exists, return null.
+
+DATE AND TIME EXTRACTION
+
+Your job is ONLY to copy the user's original wording.
+
+Do NOT:
+- calculate dates
+- resolve relative dates
+- convert time zones
+- normalize formats
+- reformat numeric dates
+- interpret ambiguous dates
+
+Extract the literal phrases exactly as written.
+
+Examples:
+
+User:
+"I'd like next Tuesday at 3pm."
+
+Return:
+- date_phrase: "next Tuesday"
+- time_phrase: "3pm"
+
+User:
+"Book me for 13/07/2026 at 09:30."
+
+Return:
+- date_phrase: "13/07/2026"
+- time_phrase: "09:30"
+
+User:
+"Can we do July 20th around 2 in the afternoon?"
+
+Return:
+- date_phrase: "July 20th"
+- time_phrase: "2 in the afternoon"
+
+A separate deterministic system is responsible for interpreting and resolving dates and times.
+
 {expected_field_hint}
 """
-
 
 _WEEKDAY_NAME_TO_INDEX = {
     "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
@@ -737,20 +1035,58 @@ def _parse_time_phrase(phrase: str) -> Dict[str, Any]:
 
 
 _EXPECTED_FIELD_HINTS = {
-    "name": "\nContext: the bot just asked for the customer's NAME. If the "
-             "message is short and doesn't obviously look like an email, "
-             "phone, date, or time, treat it as the name.",
-    "email": "\nContext: the bot just asked for the customer's EMAIL address.",
-    "phone": "\nContext: the bot just asked for the customer's CONTACT NUMBER.",
-    "date": "\nContext: the bot just asked what DATE the customer wants to "
-            "book. A short reply like \"tomorrow\", \"Monday\", \"July 20\", "
-            "or a bare number/date should be treated as date_phrase, even "
-            "if it's the entire message with nothing else in it.",
-    "time": "\nContext: the bot just asked what TIME the customer wants. A "
-            "short reply like \"2pm\", \"14:30\", or \"morning\" should be "
-            "treated as time_phrase, even if it's the entire message.",
-}
+    "name": (
+        "\nContext: The assistant has just asked for the customer's NAME. "
+        "If the user's reply is short and does not clearly match an email "
+        "address, phone number, date, or time, interpret the entire reply "
+        "as the customer's name."
+    ),
 
+    "email": (
+        "\nContext: The assistant has just asked for the customer's EMAIL "
+        "address. If the reply contains an email address, extract it exactly "
+        "as written."
+    ),
+
+    "phone": (
+        "\nContext: The assistant has just asked for the customer's CONTACT "
+        "NUMBER. If the reply contains a phone number, extract it exactly "
+        "as written without modifying its format."
+    ),
+
+    "date": (
+        "\nContext: The assistant has just asked which DATE the customer "
+        "would like to book. If the user's reply is primarily a date "
+        "expression—even if it is the entire message—treat it as "
+        "date_phrase.\n\n"
+        "Examples include:\n"
+        '- "tomorrow"\n'
+        '- "Monday"\n'
+        '- "next Thursday"\n'
+        '- "July 20"\n'
+        '- "20/07/2026"\n'
+        '- "7-20-26"\n'
+        '- "in two weeks"\n'
+        '- "day after tomorrow"\n\n'
+        "Copy the date expression exactly as written. Do not resolve, "
+        "calculate, or reformat it."
+    ),
+
+    "time": (
+        "\nContext: The assistant has just asked what TIME the customer "
+        "would like. If the user's reply is primarily a time expression—even "
+        "if it is the entire message—treat it as time_phrase.\n\n"
+        "Examples include:\n"
+        '- "2pm"\n'
+        '- "14:30"\n'
+        '- "9:00 AM"\n'
+        '- "morning"\n'
+        '- "around noon"\n'
+        '- "half past three"\n\n'
+        "Copy the time expression exactly as written. Do not convert or "
+        "interpret it."
+    ),
+}
 
 def extract_booking_fields(message: str, expected_field: Optional[str] = None) -> Dict[str, Optional[str]]:
    
