@@ -6,7 +6,13 @@ This is what the HTML/CSS/JS frontend talks to.
 
 Endpoints
 ---------
-POST /api/chat     {"session_id": "...", "message": "..."} -> {"reply": "...", "state": "..."}
+POST /api/chat            {"session_id": "...", "message": "..."} -> {"reply": "...", "state": "..."}
+POST /api/chat/stream      {"session_id": "...", "message": "..."} -> text/event-stream of
+                            {"type": "status", "status": "..."} | {"type": "token", "text": "..."} |
+                            {"type": "done", "answer": "...", "state": "..."} events, one per SSE
+                            "data:" line — this is what powers the live "Checking available time
+                            slots...", "Confirming your booking..." progress line in the widget,
+                            plus token-by-token streaming of the reply itself.
 GET  /api/greeting?session_id=...                          -> {"greeting": "..." | null}
 GET  /api/health                                            -> {"status": "ok"}
 
@@ -23,15 +29,17 @@ directly or via a simple file server on a different port) can call this
 API without being blocked by the browser.
 """
 
+import json
 import time
 import uuid
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from conversation_manager import handle_message, get_greeting
+from conversation_manager import handle_message, handle_message_stream, get_greeting
 from rag_engine import warmup as rag_warmup
 
 app = FastAPI(title="Agency Chatbot API")
@@ -83,6 +91,57 @@ def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
     return ChatResponse(reply=result["reply"], state=result["state"])
+
+
+def _sse_event(payload: dict) -> str:
+    """Format one event as an SSE 'data:' line. json.dumps (not str()) so
+    quotes/newlines/unicode in the reply text survive the trip intact —
+    the frontend does a matching JSON.parse per event.
+    """
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+@app.post("/api/chat/stream")
+def chat_stream(request: ChatRequest):
+    """Same conversation turn as /api/chat, but streamed over SSE so the
+    widget can show live progress ("Checking available time slots...",
+    "Confirming your booking...", etc.) instead of a blank wait, and reveal
+    the reply as it's generated rather than all at once.
+
+    Delegates entirely to conversation_manager.handle_message_stream, which
+    already yields exactly this shape of event and always ends in exactly
+    one "done" event, even on internal failure — see its docstring. The
+    try/except here only guards against something failing before that
+    generator even starts (e.g. session lookup), so the stream can never
+    just hang or die silently instead of reaching the frontend's "done"
+    handler.
+    """
+    if not request.message or not request.message.strip():
+        raise HTTPException(status_code=400, detail="message cannot be empty")
+
+    def event_stream():
+        try:
+            for event in handle_message_stream(request.session_id, request.message):
+                yield _sse_event(event)
+        except Exception as e:
+            import traceback
+            print(f"[main] /api/chat/stream failed for session {request.session_id}: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            fallback = "Sorry, something went wrong on my end. Please try again in a moment."
+            yield _sse_event({"type": "token", "text": fallback})
+            yield _sse_event({"type": "done", "answer": fallback, "state": "GENERAL"})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            # Defeat proxy/gateway buffering (nginx et al.) so events reach
+            # the browser as they're yielded rather than batched.
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @app.get("/api/greeting", response_model=GreetingResponse)

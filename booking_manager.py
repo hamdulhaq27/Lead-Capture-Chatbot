@@ -51,6 +51,11 @@ from lead_manager_2 import (
 )
 from email_service import send_booking_confirmation, send_cancellation_confirmation
 
+# Used only by reschedule_booking() to keep the Chatbot_Leads sheet in
+# sync when a reschedule changes name/email/phone — see the call site
+# below for why this belongs here rather than in the caller.
+import chatbot_lead_manager
+
 ###############
 # Configuration
 ###############
@@ -239,6 +244,30 @@ def find_active_booking_by_email(email: str) -> Optional[Dict[str, Any]]:
                 and record.get("Status", "").strip() == "Confirmed"):
             return record
     return None
+
+
+def find_any_booking_by_email(email: str) -> Optional[Dict[str, Any]]:
+    """Most recent booking record for this email REGARDLESS of status
+    (Confirmed, Cancelled, or anything else) — unlike
+    find_active_booking_by_email above, which is specifically "does this
+    person have a LIVE booking right now" (used for reschedule/cancel).
+    This one answers a different question: "has this person ever made a
+    booking with us at all", used to verify an existing-customer
+    relationship before filing certain support tickets. A cancelled
+    booking still counts — cancelling doesn't erase that they were once
+    a real lead/customer.
+
+    Returns the most recent match (highest row_number, since the sheet
+    is append-only) if there are several.
+    """
+    email_norm = str(email).strip().lower()
+    matches = [
+        record for record in fetch_all_bookings()
+        if record.get("Email", "").strip().lower() == email_norm
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda r: r.get("row_number", 0))
 
 
 def find_active_booking_by_phone(normalized_phone: str) -> Optional[Dict[str, Any]]:
@@ -483,6 +512,15 @@ def reschedule_booking(booking_id: str, new_start_dt: datetime.datetime,
     updated_company = (company if company is not None else record.get("Company", "")).strip()
     updated_note = (note if note is not None else record.get("Note", "")).strip()
 
+    # Captured BEFORE any of the updated_* values are written anywhere —
+    # this booking's contact info as it stood prior to this reschedule,
+    # used below as a fallback matcher when syncing the change to
+    # Chatbot_Leads (see update_lead_booking()'s own docstring: some lead
+    # rows never got a Booking ID recorded, so matching on the OLD
+    # contact info is what finds them).
+    old_email = record.get("Email", "")
+    old_phone = record.get("Contact Number", "")
+
     validate_booking_fields(updated_name, updated_email, updated_phone_raw)
     updated_phone_normalized = normalize_phone(updated_phone_raw)
 
@@ -522,7 +560,7 @@ def reschedule_booking(booking_id: str, new_start_dt: datetime.datetime,
     event_id = record.get("Calendar Event ID", "")
     if not event_id:
         raise BookingError(
-            f"Booking '{booking_id}' has no linked calendar event — cannot update it safely."
+            f"Booking '{booking_id}' has no linked calendar event cannot update it safely."
         )
 
     try:
@@ -578,6 +616,30 @@ def reschedule_booking(booking_id: str, new_start_dt: datetime.datetime,
         "date": new_start_local.strftime("%Y-%m-%d"),
         "time": new_start_local.strftime("%H:%M"),
     }
+
+    # Keep Chatbot_Leads in sync with this reschedule — if the reschedule
+    # changed name/email/phone, the lead row for this same booking should
+    # reflect it too, rather than silently going stale. Best-effort and
+    # non-blocking, same principle as the confirmation email right below:
+    # a failure to update the lead sheet must never undo or fail the
+    # reschedule itself, which has already fully succeeded by this point
+    # (Calendar + Bookings sheet are both already updated above).
+    try:
+        lead_sync_result = chatbot_lead_manager.update_lead_booking(
+            old_booking_id=booking_id,
+            new_booking_id=booking_id,  # reschedule keeps the same booking ID
+            name=updated_name,
+            email=updated_email,
+            phone=to_local_pk_format(updated_phone_normalized),
+            company=updated_company,
+            old_email=old_email,
+            old_phone=old_phone,
+        )
+        result["lead_sync_updated"] = lead_sync_result is not None
+    except Exception as e:
+        print(f"[booking_manager] Failed to sync updated contact info to Chatbot_Leads: {e}")
+        result["lead_sync_updated"] = False
+        result["lead_sync_error"] = str(e)
 
     # Send an update confirmation (reuses the booking-confirmation email
     # template — the content is the same shape: here's your booking ID

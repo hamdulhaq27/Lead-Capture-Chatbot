@@ -274,6 +274,49 @@ def update_lead_booking(old_booking_id: str, new_booking_id: str,
     return dict(zip(HEADERS, row))
 
 
+def update_lead_by_row(row_number: int, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    records = fetch_all_leads()
+    target_record = None
+    for r in records:
+        if r.get("row_number") == row_number:
+            target_record = r
+            break
+            
+    if not target_record:
+        return None
+        
+    updated_name = (updates.get("name") if updates.get("name") is not None else target_record.get("Lead Name", "")).strip()
+    updated_email = (updates.get("email") if updates.get("email") is not None else target_record.get("Email", "")).strip().lower()
+    updated_phone = (updates.get("phone") if updates.get("phone") is not None else target_record.get("Contact Number", "")).strip()
+    
+    if updated_phone:
+        try:
+            phone_normalized = normalize_phone(updated_phone)
+            validate_phone_number(phone_normalized)
+            updated_phone = to_local_pk_format(phone_normalized)
+        except Exception:
+            pass
+        
+    row = [
+        updated_name.title(), updated_email, updated_phone, 
+        target_record.get("Company", ""), target_record.get("Requirement", ""),
+        target_record.get("Service Interested In", ""), target_record.get("Source", ""),
+        target_record.get("Lead Status", "New"), target_record.get("Created At", ""),
+        target_record.get("Booking ID", "")
+    ]
+    
+    service_client = get_service()
+    last_col = chr(ord('A') + len(HEADERS) - 1)
+    service_client.spreadsheets().values().update(
+        spreadsheetId=CHATBOT_LEADS_SPREADSHEET_ID,
+        range=f"{SHEET_NAME}!A{row_number}:{last_col}{row_number}",
+        valueInputOption=GoogleSheetsHelper.Value_Input_Option.raw,
+        body={"majorDimension": "ROWS", "values": [row]},
+    ).execute()
+    
+    return dict(zip(HEADERS, row))
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------

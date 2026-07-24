@@ -40,6 +40,7 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USERNAME = os.environ.get("SMTP_USERNAME")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
 SMTP_FROM_NAME = os.environ.get("SMTP_FROM_NAME", "Our Agency")
+SUPPORT_TEAM_EMAIL = SMTP_USERNAME
 
 
 class EmailSendError(Exception):
@@ -291,6 +292,101 @@ def _format_cancellation_confirmation(booking: Dict[str, Any]) -> Dict[str, str]
     return {"plain": plain, "html": html}
 
 
+def _format_ticket_confirmation(ticket: Dict[str, Any]) -> Dict[str, str]:
+    """Returns {"plain": ..., "html": ...}. `ticket` is the dict returned
+    by support_ticket_manager.create_ticket() (capitalized Sheets-style
+    keys, e.g. "Ticket ID", "Category")."""
+    name = ticket.get("Lead Name", "")
+    ticket_id = ticket.get("Ticket ID", "")
+    category = ticket.get("Category", "")
+    priority = ticket.get("Priority", "")
+    escalated = str(ticket.get("Escalated To Human", "")).strip().lower() == "yes"
+
+    next_step = (
+        "One of our team members will follow up with you directly."
+        if escalated else
+        "Our team will review this and follow up if anything further is needed."
+    )
+
+    plain = (
+        f"Hi {name},\n\n"
+        f"Thanks for reaching out. We've logged your request as ticket "
+        f"{ticket_id} (category: {category}).\n\n"
+        f"{next_step}\n\n"
+        f"You can ask for the status of this ticket anytime "
+        f"using the reference {ticket_id}.\n\n"
+        f"Best regards,\n{SMTP_FROM_NAME}"
+    )
+
+    body_html = f"""
+      <p style="margin:0 0 14px; color:{_INK}; font-size:14.5px; line-height:1.6;">Hi {name},</p>
+      <p style="margin:0 0 14px; color:{_INK}; font-size:14.5px; line-height:1.6;">
+        Thanks for reaching out. We've logged your request for our team.
+      </p>
+      {_html_details_table([
+          ("Ticket ID", ticket_id),
+          ("Category", category),
+      ])}
+      <p style="margin:0 0 14px; color:{_INK}; font-size:14.5px; line-height:1.6;">
+        {next_step}
+      </p>
+      <p style="margin:0; color:{_INK}; font-size:14.5px; line-height:1.6;">
+        You can ask for the status of this ticket anytime using
+        the reference <strong>{ticket_id}</strong>.<br><br>
+        Best regards,<br><strong>{SMTP_FROM_NAME}</strong>
+      </p>
+    """
+    html = _html_shell("We've received your request", body_html)
+
+    return {"plain": plain, "html": html}
+
+
+def _format_escalation_notice(ticket: Dict[str, Any]) -> Dict[str, str]:
+    """Internal notice sent to SUPPORT_TEAM_EMAIL, not the customer — a
+    different audience, so this is a separate template rather than a
+    variant of the customer-facing confirmation above."""
+    ticket_id = ticket.get("Ticket ID", "")
+    category = ticket.get("Category", "")
+    priority = ticket.get("Priority", "")
+    name = ticket.get("Lead Name", "")
+    email = ticket.get("Email", "")
+    phone = ticket.get("Contact Number", "")
+    description = ticket.get("Description", "")
+    reason = ticket.get("Escalation Reason", "")
+    summary = ticket.get("Chat Summary", "")
+
+    plain = (
+        f"Ticket {ticket_id} needs human follow-up.\n\n"
+        f"Category: {category}\n"
+        f"Priority: {priority}\n"
+        f"Reason for escalation: {reason}\n\n"
+        f"Customer: {name} ({email}, {phone})\n"
+        f"Description: {description}\n\n"
+        f"Chat summary: {summary}\n"
+    )
+
+    body_html = f"""
+      <p style="margin:0 0 14px; color:{_INK}; font-size:14.5px; line-height:1.6;">
+        Ticket <strong>{ticket_id}</strong> needs human follow-up.
+      </p>
+      {_html_details_table([
+          ("Category", category),
+          ("Priority", priority),
+          ("Reason", reason),
+          ("Customer", f"{name} ({email}, {phone})"),
+      ])}
+      <p style="margin:0 0 8px; color:{_INK}; font-size:14.5px; line-height:1.6;">
+        <strong>Description:</strong> {description}
+      </p>
+      <p style="margin:0; color:{_INK_SOFT}; font-size:13.5px; line-height:1.6;">
+        <strong>Chat summary:</strong> {summary}
+      </p>
+    """
+    html = _html_shell(f"Escalation — {priority} priority", body_html)
+
+    return {"plain": plain, "html": html}
+
+
 # ---------------------------------------------------------------------------
 # Public functions — called by booking_manager.py
 # ---------------------------------------------------------------------------
@@ -339,6 +435,58 @@ def send_cancellation_confirmation(booking: Dict[str, Any]) -> Dict[str, Any]:
         return {"sent": True}
     except EmailSendError as e:
         print(f"[email_service] Cancellation confirmation email failed: {e}")
+        return {"sent": False, "error": str(e)}
+
+
+def send_ticket_confirmation(ticket: Dict[str, Any]) -> Dict[str, Any]:
+    """Send a ticket-received confirmation to the customer.
+
+    `ticket` is the dict returned by support_ticket_manager.create_ticket()
+    (Sheets-row-shaped dict with keys like "Ticket ID", "Email", "Category").
+
+    Same never-raises contract as send_booking_confirmation(): a failed
+    email must never roll back or block a ticket that's already been
+    written to Sheets — the ticket is real regardless of whether this
+    notification lands.
+    """
+    try:
+        ticket_id = ticket.get("Ticket ID", "")
+        email = ticket.get("Email", "")
+        if not email:
+            return {"sent": False, "error": "No email address on this ticket record."}
+
+        subject = f"We've received your request - {ticket_id}"
+        body = _format_ticket_confirmation(ticket)
+        _send_email(email, subject, body["plain"], body["html"])
+        return {"sent": True}
+    except EmailSendError as e:
+        print(f"[email_service] Ticket confirmation email failed: {e}")
+        return {"sent": False, "error": str(e)}
+
+
+def send_escalation_notice(ticket: Dict[str, Any]) -> Dict[str, Any]:
+    """Send an internal notice to SUPPORT_TEAM_EMAIL when a ticket needs
+    human follow-up — a different audience and template from
+    send_ticket_confirmation() above (that one goes to the customer, this
+    one goes to the team inbox).
+
+    Same never-raises contract: support_ticket_manager.create_ticket()
+    already wrote the escalation flag to Sheets by the time this runs, so
+    a failed notification email is a degraded experience (the team might
+    miss it until they check the sheet), not a data-integrity problem.
+    """
+    try:
+        if not SUPPORT_TEAM_EMAIL:
+            return {"sent": False, "error": "SMTP_USERNAME is not configured, so there's no inbox to send the escalation notice to."}
+
+        ticket_id = ticket.get("Ticket ID", "")
+        priority = ticket.get("Priority", "")
+        subject = f"[Escalation - {priority}] Ticket {ticket_id} needs a human"
+        body = _format_escalation_notice(ticket)
+        _send_email(SUPPORT_TEAM_EMAIL, subject, body["plain"], body["html"])
+        return {"sent": True}
+    except EmailSendError as e:
+        print(f"[email_service] Escalation notice email failed: {e}")
         return {"sent": False, "error": str(e)}
 
 
