@@ -943,6 +943,18 @@ def _handle_feature_suggestion_flow(session: Session, message: str, prompts: dic
     user_prompt = f"FIRST_RESPONSE: {is_first_response}\nCONVERSATION HISTORY:\n{history_text}"
     data = llm_json_call(sys_prompt, user_prompt)
 
+    # Backstop for a misclassification upstream: if Stage 1 set
+    # wants_feature_or_improvement on what is really a fault in a service
+    # deliverable (a missing field on the user's site, an underperforming
+    # ad), the suggestion prompt flags it here rather than asking the user
+    # to design the fix. Clear the flag and hand straight back to routing,
+    # which then proceeds to verification/collection like any other issue.
+    if data.get("not_a_feature_request"):
+        session.collected_data["wants_feature_or_improvement"] = False
+        session.collected_data["suggestion_captured"] = True
+        yield from _route_ticket_flow(session, message, prompts)
+        return
+
     extracted = data.get("extracted_data", {})
     suggestion = extracted.get("suggestion")
     if suggestion is not None and str(suggestion).lower() != "null" and str(suggestion).strip():

@@ -784,14 +784,28 @@ Respond with **ONLY** a valid JSON object in this format:
    - For a feature request or suggestion: start with a positive acknowledgment (e.g., "That's a great suggestion! ").
    If FIRST_RESPONSE is False, do NOT include any apologies or acknowledgments. Just ask the next question directly.
 3. Determine if the core issue, bug, complaint, or feature request is clear enough to log. Your job is ONLY to understand and capture it, NOT to troubleshoot the problem and NOT to ask about the customer's account.
-   - If a user states a concrete issue (e.g., "the contact us form has a missing email field", "my ads aren't performing well", "I can't attract more customers", "broken link", or "I want to reschedule via email"), that is 100% sufficient detail.
+   - If a user states a concrete issue (e.g., "the contact us form has a missing email field", "my ads aren't performing well", "I can't attract more customers", "broken link", or "I want to reschedule via email"), that is 100% sufficient detail. Note that a fault in something the agency builds or runs for clients — a missing field on their website, an underperforming ad, a broken link, a dated logo — is a service *issue* to be fixed, NOT a feature request (see rule 6); do not ask the user to design the fix.
    - A bare subjective judgment about an existing process or feature — e.g., "the cancellation process is very lengthy", "the rescheduling process is very lengthy", "the checkout is confusing" — is DIFFERENT from a concrete issue above: it tells you the user is unhappy with how something works, but not what actually happens or what makes it that way, and you need that before you can log anything useful. Treat this as NOT yet clear and ask ONE natural clarifying question about what's actually happening (e.g., "Can you tell me a bit more about what's making it so time-consuming or difficult?"). Once they explain the specifics — the actual steps, what feels repetitive or slow — that's enough; do not ask a second time.
    - Do NOT ask them for "error messages," "screenshots," "steps taken to resolve it," specific metrics (click-through rate, conversions, reach, ad spend), or a root-cause diagnosis — unless their original message was completely vague (like "it's broken" or "I need help") with absolutely no indication of what's wrong. You are logging the issue for a human to investigate, not diagnosing it yourself.
    - Never ask for their name, email, phone number, or booking history here — that is handled in a later step, not this one.
    - You only ever get ONE follow-up question about the issue, ever — so if the user's LATEST reply adds any real detail at all to a previous vague or subjective message (even just "the ads aren't performing well" after an initial "I have an issue with my ads", or the specifics of what makes a process lengthy after they first just called it "lengthy"), treat that as clear enough. Do not chain a second or third clarifying question.
 4. If the issue is clear enough, set `issue_clear: true`, extract a comprehensive `note` describing it into `extracted_data`, and set `follow_up_question: null`.
 5. If it's not yet clear, set `issue_clear: false`, ask exactly ONE natural follow-up question about the issue itself (never about contact info or booking history), and leave `note` as your best partial understanding (or null if you have nothing usable yet).
-6. Separately from the above, set `wants_feature_or_improvement: true` whenever the user is fundamentally asking for something new, or for a change to how an existing feature/process works — whether or not they used the words "feature" or "suggestion". A complaint that a process is slow, clunky, confusing, or could just plainly be better (e.g. "the rescheduling process is very lengthy", "I wish I didn't have to re-enter my details every time") counts, since it implies wanting that thing changed. Set it `false` for a plain bug/outage report with no implied ask for change (e.g. "the page won't load", "I was overcharged"), or anything that isn't about how a feature/process works at all (e.g. a pricing question, a general complaint about a call). This is independent of `issue_clear` — set it based on what the user has said so far, even on the very first message.
+6. Separately from the above, set `wants_feature_or_improvement`. This flag decides ONE thing: whether the next step should ask the user to describe their ideal improvement. That question only makes sense when the user is suggesting a change to **BrightReach's own product or offering** — never when they're reporting a fault in work BrightReach does for them. Judge it by WHOSE thing the user wants changed:
+
+   **Set `true` — a suggestion about BrightReach's own product, tools, or catalogue:**
+   - the chatbot or website itself ("the chatbot should let me book by voice", "add a dark mode"),
+   - one of BrightReach's own flows or processes ("the rescheduling process is very lengthy", "I wish I didn't have to re-enter my details every time", "cancelling takes too many steps"),
+   - the range of services BrightReach offers ("you should offer TikTok ads", "do you do email marketing? you should").
+   These are ideas the user is contributing about how BrightReach should work, so asking "what would a better version look like to you?" is welcome and appropriate.
+
+   **Set `false` — a problem with a service deliverable or an asset of the user's own:**
+   - anything wrong with, missing from, or underperforming in the work BrightReach builds or runs for a client — their website, contact form, landing page, online store, ad campaign, SEO, social media, branding, logo ("the contact form has no email field", "my ads aren't converting", "the homepage is slow on mobile", "our logo looks dated"),
+   - a plain bug or outage ("the page won't load"),
+   - a billing, pricing, or general-complaint matter ("I was overcharged", "how much is SEO?", "the call went badly").
+   In every one of these the user wants the agency to FIX or DELIVER something, not to hear the user's design for it. A gap in a deliverable ("no email field", "no call-to-action button") is still a defect to fix, not a feature the user is proposing — the mere fact that something is *missing* does not make it a feature request. Asking such a user "how would you like it to work?" wrongly puts the agency's job back on them; these must flow on to the normal service/verification path instead.
+
+   The test: *is the user proposing a change to how BrightReach itself operates (true), or reporting that something BrightReach makes or runs isn't right (false)?* When genuinely unsure, prefer `false` — a needless suggestion prompt on a real problem is more jarring than a missed one. This is independent of `issue_clear` — set it from what the user has said so far, even on the very first message.
 """
 
 FEATURE_SUGGESTION_SYSTEM_PROMPT = """
@@ -814,6 +828,7 @@ You will be given:
 Respond with **ONLY** a valid JSON object in this format:
 ```json
 {
+  "not_a_feature_request": true/false,
   "suggestion_clear": true/false,
   "follow_up_question": "<string or null>",
   "extracted_data": {
@@ -825,6 +840,7 @@ Respond with **ONLY** a valid JSON object in this format:
 <br>
 
 ## LOGIC
+0. **Sanity check first.** This step is only for suggestions about BrightReach's *own* product, flows, or service catalogue. If the conversation is actually a fault in something the agency builds or runs for the user — their website, contact form, ads, SEO, branding, a missing field or button on their site — then it is a service issue to fix, not a feature to design, and you must NOT ask the user how they'd like it built. In that case set `not_a_feature_request: true`, `suggestion_clear: false`, `follow_up_question: null`, and `suggestion: null`; the system will route it correctly. Otherwise set `not_a_feature_request: false` and continue.
 1. Check whether the user has already volunteered a concrete idea for how it should work instead — sometimes this is folded right into their earlier message (e.g. "it should just remember my details instead of asking every time"). If so, extract it and set `suggestion_clear: true`.
 2. If they haven't suggested anything yet, ask ONE natural, friendly question inviting their idea — e.g. "How would you suggest we improve that?" or "What would a better version of this look like to you?". If FIRST_RESPONSE is True, keep the tone warm, but do NOT re-apologize or re-acknowledge the issue — that already happened in an earlier step.
 3. Once you have a usable suggestion, set `suggestion_clear: true`, `follow_up_question: null`, and extract it into `extracted_data`.
